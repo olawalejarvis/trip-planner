@@ -9,13 +9,12 @@ monotonic in t, which makes the latest-feasible-departure search correct and
 keeps a single, well-tested forward algorithm instead of two.
 """
 
-from math import atan2, cos, radians, sin, sqrt
-
 from sqlalchemy import cast, func, select
 from sqlalchemy.orm import Session
 
-from app.planner import raptor
-from app.planner.graph import WALK_SPEED_MPS, get_graph
+from app.planner import raptor, walking
+from app.planner.geo import WALK_SPEED_MPS, haversine_m
+from app.planner.graph import get_graph
 from geoalchemy2 import Geography
 from app.models import Stop
 
@@ -25,24 +24,23 @@ ARRIVE_BY_SEARCH_WINDOW_S = 3 * 3600
 ARRIVE_BY_SEARCH_TOLERANCE_S = 60
 DEFAULT_MAX_OPTIONS = 4
 NEXT_DEPARTURE_SEARCH_WINDOW_S = 2 * 3600
-EARTH_RADIUS_M = 6371000
 
 
-def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    p1, p2 = radians(lat1), radians(lat2)
-    dphi = radians(lat2 - lat1)
-    dlambda = radians(lng2 - lng1)
-    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlambda / 2) ** 2
-    return 2 * EARTH_RADIUS_M * atan2(sqrt(a), sqrt(1 - a))
+def _direct_walk_distance(origin: tuple[float, float], destination: tuple[float, float]) -> float | None:
+    """None if too far to bother even checking -- straight-line distance is
+    always <= the real walk, so if it already exceeds the cutoff the real
+    distance can't be under it either, and it's not worth an OSRM call."""
+    if haversine_m(*origin, *destination) > MAX_DIRECT_WALK_M:
+        return None
+    return walking.real_distance_m(origin, destination)
 
 
-def _direct_walk_candidate(origin: tuple[float, float], destination: tuple[float, float]) -> dict | None:
+def _direct_walk_leg(distance_m: float | None) -> dict | None:
     """A same-stop RAPTOR round-0 label is always dominated by walking origin
-    to destination directly (triangle inequality on our straight-line walk
-    model), so round 0 is excluded from candidates entirely and pure walking
-    is instead offered explicitly, competing on equal footing with transit."""
-    distance_m = _haversine_m(*origin, *destination)
-    if distance_m > MAX_DIRECT_WALK_M:
+    to destination directly (triangle inequality), so round 0 is excluded
+    from candidates entirely and pure walking is instead offered explicitly,
+    competing on equal footing with transit."""
+    if distance_m is None or distance_m > MAX_DIRECT_WALK_M:
         return None
     duration_s = max(1, round(distance_m / WALK_SPEED_MPS))
     return {
@@ -54,13 +52,27 @@ def _direct_walk_candidate(origin: tuple[float, float], destination: tuple[float
 
 
 def _nearby_stops(db: Session, feed_id: str, lat: float, lng: float, radius_m: float) -> dict[str, tuple[int, float]]:
+    """Real walking distance/time per candidate stop (see app.planner.walking),
+    not straight-line -- confirmed straight-line can understate the real walk
+    by 2x+, which both misled the shown distance/time and let a stop that only
+    looked closer on paper out-rank a genuinely closer one."""
     point = cast(func.ST_SetSRID(func.ST_MakePoint(lng, lat), 4326), Geography)
-    distance = func.ST_Distance(Stop.geom, point)
+    within = func.ST_DWithin(Stop.geom, point, radius_m)
     rows = db.execute(
-        select(Stop.stop_id, distance)
-        .where(Stop.feed_id == feed_id, func.ST_DWithin(Stop.geom, point, radius_m))
+        select(Stop.stop_id, Stop.stop_lat, Stop.stop_lon).where(Stop.feed_id == feed_id, within)
     ).all()
-    return {stop_id: (max(1, round(dist_m / WALK_SPEED_MPS)), dist_m) for stop_id, dist_m in rows}
+    if not rows:
+        return {}
+
+    stop_coords = {stop_id: (stop_lat, stop_lon) for stop_id, stop_lat, stop_lon in rows}
+    real_distances = walking.real_distances_m((lat, lng), stop_coords)
+
+    result: dict[str, tuple[int, float]] = {}
+    for stop_id, dist_m in real_distances.items():
+        if dist_m > radius_m:
+            continue  # straight-line was within radius but the real walk isn't
+        result[stop_id] = (max(1, round(dist_m / WALK_SPEED_MPS)), dist_m)
+    return result
 
 
 def _best_arrival(labels, max_rounds: int, destination_stops: dict[str, tuple[int, float]]) -> float:
@@ -82,7 +94,7 @@ def _itineraries_from_labels(labels, max_rounds, destination_stops) -> list[dict
     # Round 0 = zero trips boarded (still just walking from the origin), so it
     # can never represent a transit-based arrival -- and by the triangle
     # inequality it's always dominated by walking origin to destination
-    # directly, which is offered separately via _direct_walk_candidate.
+    # directly, which is offered separately via _direct_walk_leg.
     for k in range(1, max_rounds + 1):
         best_stop, best_time, best_walk = None, float("inf"), None
         for stop_id, (walk_s, dist_m) in destination_stops.items():
@@ -171,17 +183,18 @@ def _first_board_time(itinerary: dict) -> int | None:
 
 
 def _plan_depart_at_once(
-    db: Session, feed_id: str, date: str, origin: tuple[float, float], destination: tuple[float, float], depart_at: int
+    graph,
+    origin_stops: dict[str, tuple[int, float]],
+    destination_stops: dict[str, tuple[int, float]],
+    direct_walk_distance: float | None,
+    depart_at: int,
 ) -> list[dict]:
     candidates: list[dict] = []
-    direct_walk = _direct_walk_candidate(origin, destination)
+    direct_walk = _direct_walk_leg(direct_walk_distance)
     if direct_walk:
         direct_walk["arrival_time"] = depart_at + direct_walk["total_walk_s"]
         candidates.append(direct_walk)
 
-    graph = get_graph(db, feed_id, date)
-    origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
-    destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
     if origin_stops and destination_stops:
         labels = raptor.run(graph, origin_stops, depart_at)
         candidates.extend(_itineraries_from_labels(labels, raptor.MAX_ROUNDS, destination_stops))
@@ -190,20 +203,14 @@ def _plan_depart_at_once(
 
 
 def _plan_arrive_by_once(
-    db: Session,
-    feed_id: str,
-    date: str,
-    origin: tuple[float, float],
-    destination: tuple[float, float],
+    graph,
+    origin_stops: dict[str, tuple[int, float]],
+    destination_stops: dict[str, tuple[int, float]],
+    direct_walk_distance: float | None,
     arrive_by: int,
     depart_upper_bound: int | None = None,
 ) -> list[dict]:
-    direct_walk = _direct_walk_candidate(origin, destination)
-    direct_walk_s = direct_walk["total_walk_s"] if direct_walk else None
-
-    graph = get_graph(db, feed_id, date)
-    origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
-    destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
+    direct_walk_s = max(1, round(direct_walk_distance / WALK_SPEED_MPS)) if direct_walk_distance is not None else None
     has_transit_option = bool(origin_stops and destination_stops)
 
     def feasible(depart_at: int) -> bool:
@@ -228,6 +235,7 @@ def _plan_arrive_by_once(
             hi = mid
 
     candidates: list[dict] = []
+    direct_walk = _direct_walk_leg(direct_walk_distance)
     if direct_walk and lo + direct_walk["total_walk_s"] <= arrive_by:
         direct_walk["arrival_time"] = lo + direct_walk["total_walk_s"]
         candidates.append(direct_walk)
@@ -249,13 +257,18 @@ def plan_depart_at(
 ) -> list[dict]:
     """Repeats the single-instant search at successively later departure
     times so the result reads like "next few buses", not just one snapshot."""
+    graph = get_graph(db, feed_id, date)
+    origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
+    destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
+    direct_walk_distance = _direct_walk_distance(origin, destination)
+
     results: list[dict] = []
     seen: set[tuple] = set()
     current_depart = depart_at
     end_time = depart_at + NEXT_DEPARTURE_SEARCH_WINDOW_S
 
     while len(results) < max_options and current_depart <= end_time:
-        batch = _plan_depart_at_once(db, feed_id, date, origin, destination, current_depart)
+        batch = _plan_depart_at_once(graph, origin_stops, destination_stops, direct_walk_distance, current_depart)
         if not batch:
             break
 
@@ -287,12 +300,19 @@ def plan_arrive_by(
     """Repeats the latest-feasible-departure search with progressively
     earlier upper bounds, surfacing a few alternatives that all still make
     the arrive-by target, not just the single latest departure."""
+    graph = get_graph(db, feed_id, date)
+    origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
+    destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
+    direct_walk_distance = _direct_walk_distance(origin, destination)
+
     results: list[dict] = []
     seen: set[tuple] = set()
     upper_bound = arrive_by
 
     for _ in range(max_options):
-        batch = _plan_arrive_by_once(db, feed_id, date, origin, destination, arrive_by, depart_upper_bound=upper_bound)
+        batch = _plan_arrive_by_once(
+            graph, origin_stops, destination_stops, direct_walk_distance, arrive_by, depart_upper_bound=upper_bound
+        )
         if not batch:
             break
 

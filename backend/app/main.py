@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 from app.config import settings
-from app.routers import routes, stops, trip_plan, trips, vehicles
+from app.routers import geocode, routes, stops, trip_plan, trips, vehicles
 
 app = FastAPI(title="Newfoundland Trip Planner API")
 
@@ -10,6 +10,7 @@ app.include_router(stops.router)
 app.include_router(vehicles.router)
 app.include_router(trip_plan.router)
 app.include_router(trips.router)
+app.include_router(geocode.router)
 
 
 @app.get("/about")

@@ -97,6 +97,12 @@ export interface Itinerary {
   legs: Leg[];
 }
 
+export interface GeocodeResult {
+  label: string;
+  lat: number;
+  lng: number;
+}
+
 export interface TripPlanResponse {
   date: string;
   itineraries: Itinerary[];

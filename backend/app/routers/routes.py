@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import gtfs_shapes
 from app.database import get_db
 from app.models import Route, ShapePoint, Trip
 
@@ -58,9 +59,11 @@ def get_route_shape(route_id: str, feed_id: str = "metrobus", db: Session = Depe
         .scalars()
         .all()
     )
+    raw = [(p.shape_pt_lat, p.shape_pt_lon) for p in points]
+    densified = gtfs_shapes.densify(trip.shape_id, raw)
 
     return {
         "route_id": route_id,
         "shape_id": trip.shape_id,
-        "points": [{"lat": p.shape_pt_lat, "lng": p.shape_pt_lon} for p in points],
+        "points": [{"lat": lat, "lng": lng} for lat, lng in densified],
     }

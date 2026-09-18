@@ -1,6 +1,7 @@
 import { API_URL } from "../config";
 import type {
   Departure,
+  GeocodeResult,
   NearbyStop,
   RouteShape,
   RouteSummary,
@@ -43,6 +44,8 @@ export const api = {
   tripShape: (tripId: string) => get<TripShape>(`/trips/${tripId}/shape`),
 
   vehicles: () => get<Vehicle[]>("/vehicles"),
+
+  geocode: (q: string) => get<GeocodeResult[]>("/geocode", { q }),
 
   tripPlan: (args: {
     fromLat: number;

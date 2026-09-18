@@ -16,9 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.gtfs_util import active_service_ids
 from app.models import Stop, StopTime, Trip
+from app.planner.geo import WALK_SPEED_MPS
 
 TRANSFER_WALK_RADIUS_M = 250
-WALK_SPEED_MPS = 1.4
 
 
 @dataclass

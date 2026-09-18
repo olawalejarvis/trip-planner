@@ -181,6 +181,30 @@ just statically checked. Real issues were found and fixed this way:
   routing API — see DISCOVERY.md §5) instead of a straight line through
   buildings. The Map tab's camera also live-follows the device's GPS
   (`Camera trackUserLocation`) instead of a one-time fix.
+- The Map tab only showed stops within 1000m of the device's current
+  location, so stops vanished when panning/zooming elsewhere — fixed by
+  loading all ~916 stops once (`GET /stops`) instead of a radius query,
+  since the whole feed is small enough to just keep in memory.
+- The itinerary detail map now marks each waypoint distinctly (green pin =
+  start, colored up-arrow = board, gray down-arrow = alight, red flag =
+  destination) instead of just drawing lines with no endpoints. Both the
+  walking route (OSRM) and the bus route line force their first/last
+  coordinate to the *exact* stop/location — the raw snapped points (nearest
+  road node / nearest shape vertex) could be a few meters off, leaving a
+  visible gap otherwise.
+- The bus route line was drawn from `/routes/{id}/shape`, which returns
+  *some* trip of that route — wrong when a route has multiple branches.
+  Added `GET /trips/{trip_id}/shape` (the exact trip actually ridden) and
+  switched the client to use it, then trim to just the board→alight segment.
+- The "Directions" step list on the trip detail screen is now collapsible
+  (tap the header to toggle), and scrolls independently with its own
+  bounded height when expanded, with safe-area padding so it isn't clipped
+  by the Android nav bar when collapsed.
+- "Leave at"/"Arrive by" only exposed a time picker, silently always
+  searching *today* — Android's native picker has no combined date+time
+  mode (iOS-only), so added a separate date button/picker (labeled
+  Today/Tomorrow/weekday), and fixed a real bug where the selected date was
+  computed but never actually sent to `/trip-plan` at all.
 
 ### Explicitly not in this phase
 - Offline sync / SQLite mirroring, saved trips, local notifications.

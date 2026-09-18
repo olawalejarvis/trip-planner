@@ -10,7 +10,18 @@ const LABEL_TEXT: Record<ItineraryLabel, string> = {
   least_walking: "Least walking",
 };
 
-export function ItineraryCard({ itinerary, onPress }: { itinerary: Itinerary; onPress?: () => void }) {
+export function ItineraryCard({
+  itinerary,
+  onPress,
+  onSave,
+  saved,
+}: {
+  itinerary: Itinerary;
+  onPress?: () => void;
+  /** Omit to hide the save affordance entirely (e.g. when re-viewing an already-saved itinerary). */
+  onSave?: () => void;
+  saved?: boolean;
+}) {
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7} disabled={!onPress}>
       <View style={styles.badgeRow}>
@@ -19,6 +30,16 @@ export function ItineraryCard({ itinerary, onPress }: { itinerary: Itinerary; on
             <Text style={styles.badgeText}>{LABEL_TEXT[label]}</Text>
           </View>
         ))}
+        {onSave && (
+          <TouchableOpacity
+            style={styles.saveButton}
+            onPress={onSave}
+            disabled={saved}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={18} color="#003333" />
+          </TouchableOpacity>
+        )}
       </View>
 
       <View style={styles.summaryRow}>
@@ -74,7 +95,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     backgroundColor: "#fff",
   },
-  badgeRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 8 },
+  badgeRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 8 },
+  saveButton: { marginLeft: "auto" },
   badge: { backgroundColor: "#e6f4ea", borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
   badgeText: { fontSize: 11, fontWeight: "700", color: "#0a7d2c" },
   summaryRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "baseline" },
