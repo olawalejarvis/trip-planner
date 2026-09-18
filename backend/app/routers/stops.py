@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import cast, func, select
+from sqlalchemy import case, cast, func, select
 from sqlalchemy.orm import Session
 
 from app import timetrack
@@ -50,6 +50,20 @@ def nearby_stops(
 
     rows = db.execute(query).all()
     return [{**serialize_stop(s), "distance_m": round(dist, 1)} for s, dist in rows]
+
+
+@router.get("/stops/search")
+def search_stops(q: str, feed_id: str = "metrobus", limit: int = 10, db: Session = Depends(get_db)):
+    if len(q.strip()) < 2:
+        return []
+    starts_with = Stop.stop_name.ilike(f"{q}%")
+    rows = db.execute(
+        select(Stop)
+        .where(Stop.feed_id == feed_id, Stop.stop_name.ilike(f"%{q}%"))
+        .order_by(case((starts_with, 0), else_=1), Stop.stop_name)
+        .limit(limit)
+    ).scalars().all()
+    return [serialize_stop(s) for s in rows]
 
 
 @router.get("/stops/{stop_id}")

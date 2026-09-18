@@ -220,3 +220,30 @@ province-wide coverage today = Metrobus's own multi-municipality service
 area. Anything beyond that (Corner Brook, DRL, etc.) would require someone
 hand-authoring a GTFS feed from public timetables — real, doable work, just
 not something we can import as-is.
+
+## 5. Walking directions (mobile app)
+
+The itinerary detail screen originally drew walk legs as a straight line
+between two points, which cuts across blocks/buildings on the actual map and
+doesn't reflect a real path. Fixed by routing walk legs through **OSRM's
+free public demo server**, which has a dedicated pedestrian profile:
+
+```
+GET https://router.project-osrm.org/route/v1/foot/{lng1},{lat1};{lng2},{lat2}?overview=full&geometries=geojson
+```
+
+- No API key needed.
+- `routes[0].geometry.coordinates` is a GeoJSON `[lng, lat]` array following
+  actual streets/paths (OpenStreetMap data), not a straight line.
+- Verified against real St. John's coordinates (MUN Centre area): returned a
+  1.2 km street-following path in ~150s estimated walk time.
+- **Caveat**: `router.project-osrm.org` is OSRM's shared public demo
+  instance — free and fine for development, but explicitly not intended for
+  production-scale traffic per OSRM's fair-use expectations. Before real
+  usage at scale, swap this for a self-hosted OSRM instance (OSRM is
+  open-source) or a paid routing provider (e.g. GraphHopper, MapTiler's
+  Directions API — currently in beta as of this writing).
+
+Implementation: `mobile/src/api/directions.ts` (`walkingRoute()`), called
+from `mobile/app/itinerary.tsx` for each walk leg, with a straight-line
+fallback if the request fails.

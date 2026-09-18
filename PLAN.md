@@ -133,10 +133,57 @@ against real data: MUN Centre → Avalon Mall direct (Route 10, no transfer),
 and a cross-town Goulds → Airport Heights route correctly transferring
 through the Village Shopping Centre hub (Routes 18 → 1 → 14).
 
+### 8. Mobile app (`mobile/`) — done
+Expo (React Native, TypeScript) app with Expo Router. Stack:
+Expo Router (navigation), `expo-location` (current-location "From" default,
+overridable), **MapLibre** (`@maplibre/maplibre-react-native`) for the map —
+chosen over Mapbox because Mapbox's SDK stopped being open source at v10;
+MapLibre is the open-source continuation, paired with **MapTiler**'s free
+tier as the tile/geocoding provider. `/stops/search` (new backend endpoint,
+ILIKE over stop names) plus MapTiler's geocoding API power a merged
+address-autosuggest component for the trip-planner's From/To fields.
+
+Screens: Home (nearby stops via GPS), Trip Planner (autosuggest From/To,
+leave-now/leave-at/arrive-by, ranked itinerary results), Stop detail
+(auto-refreshing departures), Map (live vehicles + nearby stops), Route
+detail (shape drawn as a line layer).
+
+MapLibre requires a native dev build — it does not run in Expo Go — but
+needs no Expo account or EAS; `expo run:android` builds locally against the
+Android Studio/SDK already installed.
+
+**Live-tested on a physical Android device** (via USB + `adb reverse`), not
+just statically checked. Real issues were found and fixed this way:
+- MapLibre RN's `Marker` component has an unresolved upstream touch/anchor
+  bug (issues #1158/#1160 — a fix PR exists but was closed unmerged), so
+  interactive map points (stops, tap-to-navigate) use `GeoJSONSource` +
+  `Layer` with native hit-testing instead, which is also faster for many
+  points.
+- Map icons use `@expo/vector-icons` (MaterialCommunityIcons) rendered onto
+  colored badge PNGs at build time, not emoji — consistent look, no
+  font-availability risk. Also fixed the tab bar, which was silently
+  rendering empty boxes because `@expo/vector-icons` wasn't installed at all.
+- The trip planner initially returned only one itinerary per query (a single
+  RAPTOR snapshot in time); `plan_depart_at`/`plan_arrive_by` in the backend
+  now search successive departure times so results read like "next few
+  buses". Also found and fixed a real backend bug: when origin and
+  destination were close together, round-0 RAPTOR labels (zero trips
+  boarded) produced a nonsensical "walk to a stop, then walk to destination"
+  result — round 0 is now excluded from candidates (always dominated by a
+  direct walk, by the triangle inequality) and pure walking is instead
+  offered as an explicit, fairly-competing candidate.
+- Itinerary results are tappable, opening a detail screen with step-by-step
+  directions (resolved stop names) and a map — reusing the *same* map
+  component as the Map tab (`src/components/TransitMap.tsx`), so nearby
+  stops, live vehicles, and the user's live location all show there too, not
+  just the route line.
+- Walk legs on that map follow real streets (via OSRM's free pedestrian
+  routing API — see DISCOVERY.md §5) instead of a straight line through
+  buildings. The Map tab's camera also live-follows the device's GPS
+  (`Camera trackUserLocation`) instead of a one-time fix.
+
 ### Explicitly not in this phase
-- Offline sync / SQLite mirroring, saved trips, local notifications — mobile
-  app concerns, later phase.
-- React Native app itself.
+- Offline sync / SQLite mirroring, saved trips, local notifications.
 - Actually importing Corner Brook Transit or DRL Coachlines data — neither
   publishes GTFS today, so covering them means hand-authoring a feed from
   their public timetables, which is real work worth its own task once

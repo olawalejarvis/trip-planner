@@ -9,6 +9,8 @@ monotonic in t, which makes the latest-feasible-departure search correct and
 keeps a single, well-tested forward algorithm instead of two.
 """
 
+from math import atan2, cos, radians, sin, sqrt
+
 from sqlalchemy import cast, func, select
 from sqlalchemy.orm import Session
 
@@ -18,8 +20,37 @@ from geoalchemy2 import Geography
 from app.models import Stop
 
 MAX_WALK_M = 800
+MAX_DIRECT_WALK_M = 2000
 ARRIVE_BY_SEARCH_WINDOW_S = 3 * 3600
 ARRIVE_BY_SEARCH_TOLERANCE_S = 60
+DEFAULT_MAX_OPTIONS = 4
+NEXT_DEPARTURE_SEARCH_WINDOW_S = 2 * 3600
+EARTH_RADIUS_M = 6371000
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi = radians(lat2 - lat1)
+    dlambda = radians(lng2 - lng1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlambda / 2) ** 2
+    return 2 * EARTH_RADIUS_M * atan2(sqrt(a), sqrt(1 - a))
+
+
+def _direct_walk_candidate(origin: tuple[float, float], destination: tuple[float, float]) -> dict | None:
+    """A same-stop RAPTOR round-0 label is always dominated by walking origin
+    to destination directly (triangle inequality on our straight-line walk
+    model), so round 0 is excluded from candidates entirely and pure walking
+    is instead offered explicitly, competing on equal footing with transit."""
+    distance_m = _haversine_m(*origin, *destination)
+    if distance_m > MAX_DIRECT_WALK_M:
+        return None
+    duration_s = max(1, round(distance_m / WALK_SPEED_MPS))
+    return {
+        "arrival_time": None,  # filled in by the caller, which knows the start time
+        "num_transfers": 0,
+        "total_walk_s": duration_s,
+        "legs": [{"kind": "walk", "from_stop": None, "to_stop": None, "distance_m": round(distance_m, 1), "duration_s": duration_s}],
+    }
 
 
 def _nearby_stops(db: Session, feed_id: str, lat: float, lng: float, radius_m: float) -> dict[str, tuple[int, float]]:
@@ -48,7 +79,11 @@ def _itineraries_from_labels(labels, max_rounds, destination_stops) -> list[dict
     candidates = []
     seen_leg_signatures = set()
 
-    for k in range(max_rounds + 1):
+    # Round 0 = zero trips boarded (still just walking from the origin), so it
+    # can never represent a transit-based arrival -- and by the triangle
+    # inequality it's always dominated by walking origin to destination
+    # directly, which is offered separately via _direct_walk_candidate.
+    for k in range(1, max_rounds + 1):
         best_stop, best_time, best_walk = None, float("inf"), None
         for stop_id, (walk_s, dist_m) in destination_stops.items():
             label = labels[k].get(stop_id)
@@ -124,35 +159,63 @@ def _label_candidates(candidates: list[dict], start_time: int) -> list[dict]:
     return results
 
 
-def plan_depart_at(
+def _itinerary_signature(itinerary: dict) -> tuple:
+    return tuple((leg.get("trip_id"), leg.get("board_time")) for leg in itinerary["legs"] if leg["kind"] == "transit")
+
+
+def _first_board_time(itinerary: dict) -> int | None:
+    for leg in itinerary["legs"]:
+        if leg["kind"] == "transit":
+            return leg["board_time"]
+    return None
+
+
+def _plan_depart_at_once(
     db: Session, feed_id: str, date: str, origin: tuple[float, float], destination: tuple[float, float], depart_at: int
 ) -> list[dict]:
+    candidates: list[dict] = []
+    direct_walk = _direct_walk_candidate(origin, destination)
+    if direct_walk:
+        direct_walk["arrival_time"] = depart_at + direct_walk["total_walk_s"]
+        candidates.append(direct_walk)
+
     graph = get_graph(db, feed_id, date)
     origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
     destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
-    if not origin_stops or not destination_stops:
-        return []
+    if origin_stops and destination_stops:
+        labels = raptor.run(graph, origin_stops, depart_at)
+        candidates.extend(_itineraries_from_labels(labels, raptor.MAX_ROUNDS, destination_stops))
 
-    labels = raptor.run(graph, origin_stops, depart_at)
-    candidates = _itineraries_from_labels(labels, raptor.MAX_ROUNDS, destination_stops)
     return _label_candidates(candidates, depart_at)
 
 
-def plan_arrive_by(
-    db: Session, feed_id: str, date: str, origin: tuple[float, float], destination: tuple[float, float], arrive_by: int
+def _plan_arrive_by_once(
+    db: Session,
+    feed_id: str,
+    date: str,
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    arrive_by: int,
+    depart_upper_bound: int | None = None,
 ) -> list[dict]:
+    direct_walk = _direct_walk_candidate(origin, destination)
+    direct_walk_s = direct_walk["total_walk_s"] if direct_walk else None
+
     graph = get_graph(db, feed_id, date)
     origin_stops = _nearby_stops(db, feed_id, *origin, MAX_WALK_M)
     destination_stops = _nearby_stops(db, feed_id, *destination, MAX_WALK_M)
-    if not origin_stops or not destination_stops:
-        return []
+    has_transit_option = bool(origin_stops and destination_stops)
 
     def feasible(depart_at: int) -> bool:
+        if direct_walk_s is not None and depart_at + direct_walk_s <= arrive_by:
+            return True
+        if not has_transit_option:
+            return False
         labels = raptor.run(graph, origin_stops, depart_at)
         return _best_arrival(labels, raptor.MAX_ROUNDS, destination_stops) <= arrive_by
 
-    lo = max(0, arrive_by - ARRIVE_BY_SEARCH_WINDOW_S)
-    hi = arrive_by
+    hi = depart_upper_bound if depart_upper_bound is not None else arrive_by
+    lo = max(0, hi - ARRIVE_BY_SEARCH_WINDOW_S)
 
     if not feasible(lo):
         return []
@@ -164,6 +227,89 @@ def plan_arrive_by(
         else:
             hi = mid
 
-    labels = raptor.run(graph, origin_stops, lo)
-    candidates = _itineraries_from_labels(labels, raptor.MAX_ROUNDS, destination_stops)
+    candidates: list[dict] = []
+    if direct_walk and lo + direct_walk["total_walk_s"] <= arrive_by:
+        direct_walk["arrival_time"] = lo + direct_walk["total_walk_s"]
+        candidates.append(direct_walk)
+    if has_transit_option:
+        labels = raptor.run(graph, origin_stops, lo)
+        candidates.extend(_itineraries_from_labels(labels, raptor.MAX_ROUNDS, destination_stops))
+
     return _label_candidates(candidates, lo)
+
+
+def plan_depart_at(
+    db: Session,
+    feed_id: str,
+    date: str,
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    depart_at: int,
+    max_options: int = DEFAULT_MAX_OPTIONS,
+) -> list[dict]:
+    """Repeats the single-instant search at successively later departure
+    times so the result reads like "next few buses", not just one snapshot."""
+    results: list[dict] = []
+    seen: set[tuple] = set()
+    current_depart = depart_at
+    end_time = depart_at + NEXT_DEPARTURE_SEARCH_WINDOW_S
+
+    while len(results) < max_options and current_depart <= end_time:
+        batch = _plan_depart_at_once(db, feed_id, date, origin, destination, current_depart)
+        if not batch:
+            break
+
+        for itinerary in batch:
+            sig = _itinerary_signature(itinerary)
+            if sig not in seen:
+                seen.add(sig)
+                results.append(itinerary)
+
+        earliest = min(batch, key=lambda i: i["arrival_time"])
+        next_board = _first_board_time(earliest)
+        if next_board is None or next_board < current_depart:
+            break
+        current_depart = next_board + 1
+
+    results.sort(key=lambda i: i["arrival_time"])
+    return results[:max_options]
+
+
+def plan_arrive_by(
+    db: Session,
+    feed_id: str,
+    date: str,
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    arrive_by: int,
+    max_options: int = DEFAULT_MAX_OPTIONS,
+) -> list[dict]:
+    """Repeats the latest-feasible-departure search with progressively
+    earlier upper bounds, surfacing a few alternatives that all still make
+    the arrive-by target, not just the single latest departure."""
+    results: list[dict] = []
+    seen: set[tuple] = set()
+    upper_bound = arrive_by
+
+    for _ in range(max_options):
+        batch = _plan_arrive_by_once(db, feed_id, date, origin, destination, arrive_by, depart_upper_bound=upper_bound)
+        if not batch:
+            break
+
+        found_new = False
+        for itinerary in batch:
+            sig = _itinerary_signature(itinerary)
+            if sig not in seen:
+                seen.add(sig)
+                results.append(itinerary)
+                found_new = True
+        if not found_new:
+            break
+
+        earliest_depart = min(i["depart_time"] for i in batch)
+        if earliest_depart - 60 >= upper_bound:
+            break
+        upper_bound = earliest_depart - 60
+
+    results.sort(key=lambda i: i["arrival_time"])
+    return results[:max_options]

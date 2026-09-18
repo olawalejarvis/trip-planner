@@ -1,9 +1,9 @@
 # Newfoundland Trip Planner
 
-Backend foundation for transit trip planner, built on
-Metrobus's real GTFS feed and live TimeTrack data. See
-[PLAN.md](PLAN.md) for the design and [DISCOVERY.md](DISCOVERY.md) for the
-raw data investigation behind it.
+Transit trip planner built on Metrobus's real GTFS feed and live TimeTrack
+data: a Python/FastAPI backend ([`backend/`](backend)) and an Expo React
+Native app ([`mobile/`](mobile)). See [PLAN.md](PLAN.md) for the design and
+[DISCOVERY.md](DISCOVERY.md) for the raw data investigation behind it.
 
 ## Setup
 
@@ -44,3 +44,8 @@ Run against a local zip instead of downloading:
 ```bash
 python -m app.gtfs_import --feed metrobus --zip /path/to/google_transit.zip
 ```
+
+## Mobile app
+
+See [mobile/README.md](mobile/README.md) for setup. Needs the backend above
+running, plus a free MapTiler key for the map and address search.
