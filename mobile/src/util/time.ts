@@ -2,6 +2,20 @@
 // 86400 for after-midnight trips) and YYYYMMDD dates. These convert to/from
 // plain JS Dates for the UI.
 
+import type { Itinerary } from "../api/types";
+
+// Metrobus advises being at the stop 5 minutes before the scheduled departure.
+const STOP_ARRIVAL_BUFFER_S = 5 * 60;
+
+/** When to leave the origin to make the first bus with that 5-minute buffer
+ * built in. Null for itineraries with no transit leg (pure walking) or that
+ * board right where they start (no walk leg first). */
+export function leaveByTime(itinerary: Itinerary): number | null {
+  const [first, second] = itinerary.legs;
+  if (!first || first.kind !== "walk" || !second || second.kind !== "transit") return null;
+  return second.board_time - first.duration_s - STOP_ARRIVAL_BUFFER_S;
+}
+
 export function dateToSecondsSinceMidnight(date: Date): number {
   return date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
 }

@@ -40,7 +40,16 @@
         }
       ],
       "@maplibre/maplibre-react-native",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 280,
+          "resizeMode": "contain",
+          "backgroundColor": "#E6F4FE"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

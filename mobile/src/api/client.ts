@@ -8,6 +8,7 @@ import type {
   StopSummary,
   TripPlanResponse,
   TripShape,
+  TripStops,
   Vehicle,
 } from "./types";
 
@@ -42,6 +43,8 @@ export const api = {
   routeShape: (routeId: string) => get<RouteShape>(`/routes/${routeId}/shape`),
 
   tripShape: (tripId: string) => get<TripShape>(`/trips/${tripId}/shape`),
+
+  tripStops: (tripId: string) => get<TripStops>(`/trips/${tripId}/stops`),
 
   vehicles: () => get<Vehicle[]>("/vehicles"),
 

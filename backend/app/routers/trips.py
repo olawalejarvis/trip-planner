@@ -4,9 +4,33 @@ from sqlalchemy.orm import Session
 
 from app import gtfs_shapes
 from app.database import get_db
-from app.models import ShapePoint, Trip
+from app.models import ShapePoint, Stop, StopTime, Trip
 
 router = APIRouter(tags=["trips"])
+
+
+@router.get("/trips/{trip_id}/stops")
+def get_trip_stops(trip_id: str, feed_id: str = "metrobus", db: Session = Depends(get_db)):
+    """The stops actually served by this trip, in ridden order -- lets the
+    itinerary map show just this route's stops instead of every stop in the
+    whole feed."""
+    trip = db.get(Trip, {"feed_id": feed_id, "trip_id": trip_id})
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    rows = db.execute(
+        select(Stop)
+        .join(StopTime, (StopTime.feed_id == Stop.feed_id) & (StopTime.stop_id == Stop.stop_id))
+        .where(StopTime.feed_id == feed_id, StopTime.trip_id == trip_id)
+        .order_by(StopTime.stop_sequence)
+    ).scalars().all()
+
+    return {
+        "trip_id": trip_id,
+        "stops": [
+            {"stop_id": s.stop_id, "name": s.stop_name, "lat": s.stop_lat, "lng": s.stop_lon} for s in rows
+        ],
+    }
 
 
 @router.get("/trips/{trip_id}/shape")

@@ -10,7 +10,7 @@ import { walkingRoute } from "../src/api/directions";
 import { TransitMap } from "../src/components/TransitMap";
 import type { Itinerary, RouteSummary } from "../src/api/types";
 import { trimShapeToSegment } from "../src/util/geo";
-import { durationLabel, secondsToClockLabel } from "../src/util/time";
+import { durationLabel, leaveByTime, secondsToClockLabel } from "../src/util/time";
 
 interface Point {
   lat: number;
@@ -49,6 +49,9 @@ interface NavParams {
   itinerary: Itinerary;
   origin: Point & { label: string };
   destination: Point & { label: string };
+  /** Present when reopening a saved trip -- already-fetched walk paths, so
+   * the OSRM fetch below is skipped entirely. */
+  walkRoutes?: Record<number, LngLat[]>;
 }
 
 export default function ItineraryScreen() {
@@ -66,9 +69,17 @@ export default function ItineraryScreen() {
   const [stopNames, setStopNames] = useState<Record<string, string>>({});
   const [routeInfo, setRouteInfo] = useState<Record<string, RouteSummary>>({});
   const [tripShapes, setTripShapes] = useState<Record<string, LngLat[]>>({});
+  const [routeStopIds, setRouteStopIds] = useState<Set<string>>(new Set());
   const [walkRoutes, setWalkRoutes] = useState<Record<number, LngLat[]>>({});
   const [loading, setLoading] = useState(true);
   const [directionsExpanded, setDirectionsExpanded] = useState(true);
+
+  // The map's live-vehicle layer shows only the buses actually serving this
+  // itinerary, not every vehicle in the feed -- a tracker for this trip.
+  const vehicleTripIds = useMemo(
+    () => new Set(parsed ? parsed.itinerary.legs.filter((l) => l.kind === "transit").map((l) => l.trip_id) : []),
+    [parsed],
+  );
 
   useEffect(() => {
     if (!parsed) {
@@ -95,7 +106,8 @@ export default function ItineraryScreen() {
       Promise.all([...stopIds].map((id) => api.stop(id).then((s) => [id, s] as const).catch(() => null))),
       Promise.all([...routeIds].map((id) => api.route(id).then((r) => [id, r] as const).catch(() => null))),
       Promise.all([...tripIds].map((id) => api.tripShape(id).then((s) => [id, s] as const).catch(() => null))),
-    ]).then(([stopResults, routeResults, shapeResults]) => {
+      Promise.all([...tripIds].map((id) => api.tripStops(id).catch(() => null))),
+    ]).then(([stopResults, routeResults, shapeResults, tripStopsResults]) => {
       const coords: Record<string, Point> = {};
       const names: Record<string, string> = {};
       for (const entry of stopResults) {
@@ -116,16 +128,27 @@ export default function ItineraryScreen() {
         const [id, shape] = entry;
         shapes[id] = shape.points.map((p) => [p.lng, p.lat]);
       }
+      const routeStops = new Set<string>();
+      for (const entry of tripStopsResults) {
+        if (!entry) continue;
+        for (const s of entry.stops) routeStops.add(s.stop_id);
+      }
       setStopCoords(coords);
       setStopNames(names);
       setRouteInfo(routes);
       setTripShapes(shapes);
+      setRouteStopIds(routeStops);
       setLoading(false);
     });
   }, [parsed]);
 
   useEffect(() => {
     if (!parsed || loading) return;
+
+    if (parsed.walkRoutes) {
+      setWalkRoutes(parsed.walkRoutes);
+      return;
+    }
 
     const pointFor = (stopId: string | null, fallback: Point): Point =>
       stopId ? (stopCoords[stopId] ?? fallback) : fallback;
@@ -159,6 +182,7 @@ export default function ItineraryScreen() {
   }
 
   const { itinerary, origin, destination } = parsed;
+  const leaveBy = leaveByTime(itinerary);
 
   const pointFor = (stopId: string | null, fallback: Point): Point =>
     stopId ? (stopCoords[stopId] ?? fallback) : fallback;
@@ -199,13 +223,16 @@ export default function ItineraryScreen() {
           {itinerary.num_transfers === 0 ? "No transfers" : `${itinerary.num_transfers} transfer(s)`} ·{" "}
           {durationLabel(itinerary.total_walk_s)} walking
         </Text>
+        {leaveBy != null && (
+          <Text style={styles.leaveBy}>Leave by {secondsToClockLabel(leaveBy)} to arrive 5 min early</Text>
+        )}
       </View>
 
       {loading ? (
         <ActivityIndicator style={styles.loading} />
       ) : (
         <View style={directionsExpanded ? styles.map : styles.mapExpanded}>
-          <TransitMap center={center} zoom={13}>
+          <TransitMap center={center} zoom={13} visibleStopIds={routeStopIds} visibleVehicleTripIds={vehicleTripIds}>
             {itinerary.legs.map((leg, idx) => {
               if (leg.kind === "walk") {
                 const from = pointFor(leg.from_stop, origin);
@@ -318,6 +345,7 @@ const styles = StyleSheet.create({
   summary: { padding: 16, borderBottomWidth: 1, borderBottomColor: "#eee" },
   summaryTimes: { fontSize: 20, fontWeight: "700" },
   summaryMeta: { fontSize: 13, color: "#666", marginTop: 4 },
+  leaveBy: { fontSize: 13, color: "#0a7d2c", fontWeight: "600", marginTop: 6 },
   loading: { marginVertical: 40 },
   map: { height: 260 },
   mapExpanded: { flex: 1 },

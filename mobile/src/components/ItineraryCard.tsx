@@ -2,7 +2,7 @@ import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
 import type { Itinerary, ItineraryLabel } from "../api/types";
-import { durationLabel, secondsToClockLabel } from "../util/time";
+import { durationLabel, leaveByTime, secondsToClockLabel } from "../util/time";
 
 const LABEL_TEXT: Record<ItineraryLabel, string> = {
   fastest: "Fastest",
@@ -22,6 +22,8 @@ export function ItineraryCard({
   onSave?: () => void;
   saved?: boolean;
 }) {
+  const leaveBy = leaveByTime(itinerary);
+
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7} disabled={!onPress}>
       <View style={styles.badgeRow}>
@@ -52,6 +54,9 @@ export function ItineraryCard({
         {itinerary.num_transfers === 0 ? "No transfers" : `${itinerary.num_transfers} transfer(s)`} ·{" "}
         {durationLabel(itinerary.total_walk_s)} walking
       </Text>
+      {leaveBy != null && (
+        <Text style={styles.leaveBy}>Leave by {secondsToClockLabel(leaveBy)} to arrive 5 min early</Text>
+      )}
 
       <View style={styles.legs}>
         {itinerary.legs.map((leg, idx) =>
@@ -103,6 +108,7 @@ const styles = StyleSheet.create({
   times: { fontSize: 17, fontWeight: "700" },
   duration: { fontSize: 15, color: "#555" },
   meta: { fontSize: 13, color: "#888", marginTop: 2, marginBottom: 8 },
+  leaveBy: { fontSize: 12, color: "#0a7d2c", fontWeight: "600", marginTop: -4, marginBottom: 8 },
   legs: { gap: 6 },
   legRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   legIcon: { width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center" },

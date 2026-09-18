@@ -11,8 +11,10 @@ import {
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import type { LngLat } from "@maplibre/maplibre-react-native";
 
 import { api } from "../../src/api/client";
+import { walkingRoute } from "../../src/api/directions";
 import { AddressAutocomplete } from "../../src/components/AddressAutocomplete";
 import { ItineraryCard } from "../../src/components/ItineraryCard";
 import type { Itinerary, PlaceSuggestion } from "../../src/api/types";
@@ -21,6 +23,48 @@ import { dateLabel, dateToSecondsSinceMidnight, dateToYYYYMMDD, secondsToClockLa
 import { favorites, savedItineraries, type FavoriteTrip, type SavedItinerary } from "../../src/storage/savedTrips";
 
 type TimeMode = "now" | "depart" | "arrive";
+
+/** Real road-following paths for each walk leg, fetched once at save time
+ * (same OSRM call the itinerary screen makes live) so a saved trip already
+ * has them on reopen instead of depending on network access again. */
+async function computeWalkRoutes(
+  itinerary: Itinerary,
+  origin: { lat: number; lng: number },
+  destination: { lat: number; lng: number },
+): Promise<Record<number, LngLat[]>> {
+  const stopIds = new Set<string>();
+  for (const leg of itinerary.legs) {
+    if (leg.kind !== "walk") continue;
+    if (leg.from_stop) stopIds.add(leg.from_stop);
+    if (leg.to_stop) stopIds.add(leg.to_stop);
+  }
+
+  const stopCoords: Record<string, { lat: number; lng: number }> = {};
+  await Promise.all(
+    [...stopIds].map((id) =>
+      api
+        .stop(id)
+        .then((s) => {
+          stopCoords[id] = { lat: s.lat, lng: s.lng };
+        })
+        .catch(() => {}),
+    ),
+  );
+
+  const pointFor = (stopId: string | null, fallback: { lat: number; lng: number }): LngLat => {
+    const p = stopId ? stopCoords[stopId] : undefined;
+    return p ? [p.lng, p.lat] : [fallback.lng, fallback.lat];
+  };
+
+  const routes: Record<number, LngLat[]> = {};
+  await Promise.all(
+    itinerary.legs.map(async (leg, idx) => {
+      if (leg.kind !== "walk") return;
+      routes[idx] = await walkingRoute(pointFor(leg.from_stop, origin), pointFor(leg.to_stop, destination));
+    }),
+  );
+  return routes;
+}
 
 export default function PlanScreen() {
   const router = useRouter();
@@ -109,7 +153,16 @@ export default function PlanScreen() {
 
   async function handleSaveItinerary(itinerary: Itinerary, idx: number) {
     if (!searchedPoints) return;
-    setSavedList(await savedItineraries.add(itinerary, searchedPoints.origin, searchedPoints.destination, searchedPoints.date));
+    const walkRoutes = await computeWalkRoutes(itinerary, searchedPoints.origin, searchedPoints.destination);
+    setSavedList(
+      await savedItineraries.add(
+        itinerary,
+        searchedPoints.origin,
+        searchedPoints.destination,
+        searchedPoints.date,
+        walkRoutes,
+      ),
+    );
     setSavedIndices((prev) => new Set(prev).add(idx));
   }
 
@@ -120,7 +173,14 @@ export default function PlanScreen() {
   function openSavedItinerary(saved: SavedItinerary) {
     router.push({
       pathname: "/itinerary",
-      params: { data: JSON.stringify({ itinerary: saved.itinerary, origin: saved.origin, destination: saved.destination }) },
+      params: {
+        data: JSON.stringify({
+          itinerary: saved.itinerary,
+          origin: saved.origin,
+          destination: saved.destination,
+          walkRoutes: saved.walkRoutes,
+        }),
+      },
     });
   }
 

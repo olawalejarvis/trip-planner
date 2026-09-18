@@ -1,4 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import type { LngLat } from "@maplibre/maplibre-react-native";
 
 import type { Itinerary, PlaceSuggestion } from "../api/types";
 
@@ -20,6 +21,10 @@ export interface SavedItinerary {
   destination: { lat: number; lng: number; label: string };
   date: string;
   savedAt: number;
+  // Leg index -> real road-following path (from OSRM, same as the live itinerary
+  // screen draws), captured at save time so reopening later doesn't need network
+  // access or re-fetch walking directions.
+  walkRoutes?: Record<number, LngLat[]>;
 }
 
 async function readList<T>(key: string): Promise<T[]> {
@@ -65,9 +70,13 @@ export const savedItineraries = {
     origin: { lat: number; lng: number; label: string },
     destination: { lat: number; lng: number; label: string },
     date: string,
+    walkRoutes?: Record<number, LngLat[]>,
   ): Promise<SavedItinerary[]> {
     const current = await readList<SavedItinerary>(ITINERARIES_KEY);
-    const next = [...current, { id: String(Date.now()), itinerary, origin, destination, date, savedAt: Date.now() }];
+    const next = [
+      ...current,
+      { id: String(Date.now()), itinerary, origin, destination, date, savedAt: Date.now(), walkRoutes },
+    ];
     await writeList(ITINERARIES_KEY, next);
     return next;
   },

@@ -23,11 +23,24 @@ interface Props {
   followUser?: boolean;
   /** Extra overlays (e.g. an itinerary's route/walk lines), drawn under the stop/vehicle icons. */
   children?: ReactNode;
+  /** Restricts the stop-icon layer to just these stop_ids (e.g. an itinerary's
+   * ridden route) instead of every stop in the feed. Omit to show all, as the Map tab does. */
+  visibleStopIds?: Set<string>;
+  /** Restricts the live-vehicle layer to just these gtfs_trip_ids (e.g. an
+   * itinerary's own bus) instead of every vehicle in the feed. Omit to show all. */
+  visibleVehicleTripIds?: Set<string>;
 }
 
 /** The map shared by the Map tab and the itinerary detail screen: base
  * tiles, live vehicles, and nearby-stop icons (tap to open that stop). */
-export function TransitMap({ center, zoom = 14, followUser = false, children }: Props) {
+export function TransitMap({
+  center,
+  zoom = 14,
+  followUser = false,
+  children,
+  visibleStopIds,
+  visibleVehicleTripIds,
+}: Props) {
   const router = useRouter();
   const { coords } = useCurrentLocation();
   const [stops, setStops] = useState<StopSummary[]>([]);
@@ -66,13 +79,15 @@ export function TransitMap({ center, zoom = 14, followUser = false, children }: 
   const stopsGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point, { stop_id: string }>>(
     () => ({
       type: "FeatureCollection",
-      features: stops.map((stop) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [stop.lng, stop.lat] },
-        properties: { stop_id: stop.stop_id },
-      })),
+      features: stops
+        .filter((stop) => !visibleStopIds || visibleStopIds.has(stop.stop_id))
+        .map((stop) => ({
+          type: "Feature",
+          geometry: { type: "Point", coordinates: [stop.lng, stop.lat] },
+          properties: { stop_id: stop.stop_id },
+        })),
     }),
-    [stops],
+    [stops, visibleStopIds],
   );
 
   const vehiclesGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point, { route_number: string }>>(
@@ -80,13 +95,14 @@ export function TransitMap({ center, zoom = 14, followUser = false, children }: 
       type: "FeatureCollection",
       features: vehicles
         .filter((v) => v.lat != null && v.lng != null)
+        .filter((v) => !visibleVehicleTripIds || (v.gtfs_trip_id != null && visibleVehicleTripIds.has(v.gtfs_trip_id)))
         .map((v) => ({
           type: "Feature",
           geometry: { type: "Point", coordinates: [v.lng as number, v.lat as number] },
           properties: { route_number: String(v.route_number ?? "") },
         })),
     }),
-    [vehicles],
+    [vehicles, visibleVehicleTripIds],
   );
 
   if (!MAPTILER_STYLE_URL) {

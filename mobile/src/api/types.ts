@@ -20,6 +20,11 @@ export interface TripShape {
   points: { lat: number; lng: number }[];
 }
 
+export interface TripStops {
+  trip_id: string;
+  stops: { stop_id: string; name: string; lat: number; lng: number }[];
+}
+
 export interface StopSummary {
   feed_id: string;
   stop_id: string;
